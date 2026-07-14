@@ -4671,7 +4671,7 @@ function openRenew(id){
     const p=gP(s.service);
     const tOpts=p.tiers.map(t=>{const m=p.type==='months'?(Number(t.months)||1):1;const lb=p.type==='months'?(t.months?t.months+' شهر':'—'):(t.label||'—');return`<option value="${m}" data-p="${t.price!=null&&t.price!==''?t.price:''}" data-c="${t.costPrice!=null&&t.costPrice!==''?t.costPrice:''}">${lb}</option>`;}).join('');
     const isExp=du(s.expiry)<0;
-    return`<div class="sent" data-sid="${s.id}" style="margin-bottom:.4rem"><div style="display:flex;align-items:center;gap:.35rem;margin-bottom:.35rem;flex-wrap:wrap"><input type="checkbox" class="rchk" checked title="تجديد هذا الاشتراك" style="width:17px;height:17px;accent-color:var(--ac);cursor:pointer;flex-shrink:0"><div style="width:7px;height:7px;border-radius:50%;background:${srv.color}"></div><strong style="font-size:.8rem">${s.service}</strong><span style="font-size:.63rem;color:${isExp?'var(--er)':'var(--mu)'}" dir="ltr">${toDMY(s.expiry)}${isExp?' (منتهي)':''}</span></div><div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:flex-end"><div><label class="fl" style="font-size:.61rem">الباقات</label><select class="fs rsel" style="font-size:.71rem;padding:.25rem .42rem" onchange="const o=this.options[this.selectedIndex],r=this.closest('.sent');r.querySelector('.rmn').value=this.value;if(o.dataset.p!=='')r.querySelector('.rpr').value=o.dataset.p;if(o.dataset.c!=='')r.querySelector('.rcst').value=o.dataset.c;">${tOpts||'<option value="1">1 شهر</option>'}</select></div><div><label class="fl" style="font-size:.61rem">يدوي (شهر)</label><input class="fi rmn" type="number" min="1" max="60" value="${Number(s.months)||1}" style="font-size:.71rem;padding:.25rem .42rem;width:64px"></div><div><label class="fl" style="font-size:.61rem">السعر (بيع)</label><input class="fi rpr" type="number" min="0" step="0.01" value="${s.price!=null&&s.price!==''?s.price:''}" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">التكلفة (شراء)</label><input class="fi rcst" type="number" min="0" step="0.01" value="${gCost(s)||''}" placeholder="0.00" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">طريقة الدفع</label><select class="fs rpay" style="font-size:.71rem;padding:.25rem .42rem"><option value="cash">💵 كاش</option><option value="transfer">🏦 حوالة</option><option value="balance">📲 رصيد</option><option value="debt">💸 دين (آجل)</option></select></div></div></div>`;
+    return`<div class="sent" data-sid="${s.id}" style="margin-bottom:.4rem"><div style="display:flex;align-items:center;gap:.35rem;margin-bottom:.35rem;flex-wrap:wrap"><input type="checkbox" class="rchk" checked title="تجديد هذا الاشتراك" style="width:17px;height:17px;accent-color:var(--ac);cursor:pointer;flex-shrink:0"><div style="width:7px;height:7px;border-radius:50%;background:${srv.color}"></div><strong style="font-size:.8rem">${s.service}</strong><span style="font-size:.63rem;color:${isExp?'var(--er)':'var(--mu)'}" dir="ltr">${toDMY(s.expiry)}${isExp?' (منتهي)':''}</span></div><div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:flex-end"><div><label class="fl" style="font-size:.61rem">الباقات</label><select class="fs rsel" style="font-size:.71rem;padding:.25rem .42rem" onchange="const o=this.options[this.selectedIndex],r=this.closest('.sent');r.querySelector('.rmn').value=this.value;if(o.dataset.p!=='')r.querySelector('.rpr').value=o.dataset.p;if(o.dataset.c!=='')r.querySelector('.rcst').value=o.dataset.c;">${tOpts||'<option value="1">1 شهر</option>'}</select></div><div><label class="fl" style="font-size:.61rem">يدوي (شهر)</label><input class="fi rmn" type="number" min="1" max="60" value="${Number(s.months)||1}" style="font-size:.71rem;padding:.25rem .42rem;width:64px"></div><div><label class="fl" style="font-size:.61rem">السعر (بيع)</label><input class="fi rpr" type="number" min="0" step="0.01" value="${s.price!=null&&s.price!==''?s.price:''}" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">التكلفة (شراء)</label><input class="fi rcst" type="number" min="0" step="0.01" value="${gCost(s)||''}" placeholder="0.00" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">طريقة الدفع</label><select class="fs rpay" style="font-size:.71rem;padding:.25rem .42rem"><option value="cash">💵 كاش</option><option value="transfer">🏦 حوالة</option><option value="balance">📲 رصيد</option></select></div><div><label class="fl" style="font-size:.61rem">غير مدفوع</label><label style="display:flex;align-items:center;gap:.3rem;background:rgba(232,67,147,.08);border:1px solid rgba(232,67,147,.32);border-radius:7px;padding:.3rem .5rem;cursor:pointer;height:29px;box-sizing:border-box"><input type="checkbox" class="ridt" style="width:15px;height:15px;accent-color:var(--er);cursor:pointer" onchange="const r=this.closest('.sent'),p=r.querySelector('.rpay');p.disabled=this.checked;p.style.opacity=this.checked?'.35':'1';r.style.background=this.checked?'rgba(232,67,147,.05)':'';"><span style="font-size:.66rem;font-weight:800;color:var(--er);white-space:nowrap">💸 دين</span></label></div></div></div>`;
   }).join('');
   om('mRenew');
 }
@@ -4693,8 +4693,9 @@ function applyRenew(){
     const months=Math.min(RENEW_MAX_MONTHS,Math.max(1,parseInt(el.querySelector('.rmn').value)||1));
     const prRaw=el.querySelector('.rpr').value;
     const cstRaw=(el.querySelector('.rcst')||{}).value;
-    const payRaw=(el.querySelector('.rpay')||{}).value||'';
-    if(_renewSub(c, s, {months, base: renewBase, price: prRaw, cost: cstRaw, pay: payRaw})){ cnt++; if(pmKey(payRaw)==='debt') dbtCnt++; }
+    const asDebt=!!(el.querySelector('.ridt')||{}).checked;
+    const payRaw=asDebt?'debt':((el.querySelector('.rpay')||{}).value||'');
+    if(_renewSub(c, s, {months, base: renewBase, price: prRaw, cost: cstRaw, pay: payRaw})){ cnt++; if(asDebt) dbtCnt++; }
   });
   c.updatedAt=new Date().toISOString();
   save();cm('mRenew');rC();
@@ -9991,7 +9992,7 @@ function openBulkRenew(scopeIds) {
     expiring.map(e=>{
       const cls=e.days<0?'var(--er)':e.days<=3?'var(--wa)':'var(--ok)';
       const lbl=e.days<0?'منتهي '+Math.abs(e.days)+'ي':'باقٍ '+e.days+'ي';
-      const opt=k=>`<option value="${k}"${e.pay===k?' selected':''}>${k==='cash'?'💵 كاش':k==='transfer'?'🏦 حوالة':k==='balance'?'📲 رصيد':'💸 دين'}</option>`;
+      const opt=k=>`<option value="${k}"${e.pay===k?' selected':''}>${k==='cash'?'💵 كاش':k==='transfer'?'🏦 حوالة':'📲 رصيد'}</option>`;
       return`<div class="brow" data-cid="${e.cid}" data-sid="${e.sid}" style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:.45rem .6rem;margin-bottom:.3rem">
         <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
           <input type="checkbox" class="bulk-chk" checked style="width:16px;height:16px;accent-color:var(--ac);flex-shrink:0">
@@ -10005,7 +10006,8 @@ function openBulkRenew(scopeIds) {
           <div><label class="fl" style="font-size:.58rem">أشهر</label><input class="fi bmn" type="number" min="1" max="60" value="${e.months}" style="font-size:.68rem;padding:.2rem .35rem;width:52px"></div>
           <div><label class="fl" style="font-size:.58rem">السعر</label><input class="fi bpr" type="number" min="0" step="0.01" value="${e.price!=null&&e.price!==''?e.price:''}" style="font-size:.68rem;padding:.2rem .35rem;width:68px"></div>
           <div><label class="fl" style="font-size:.58rem">التكلفة</label><input class="fi bcst" type="number" min="0" step="0.01" value="${e.cost||''}" placeholder="0.00" style="font-size:.68rem;padding:.2rem .35rem;width:68px"></div>
-          <div><label class="fl" style="font-size:.58rem">الدفع</label><select class="fs bpay" style="font-size:.68rem;padding:.2rem .35rem">${opt('cash')}${opt('transfer')}${opt('balance')}${opt('debt')}</select></div>
+          <div><label class="fl" style="font-size:.58rem">الدفع</label><select class="fs bpay" style="font-size:.68rem;padding:.2rem .35rem">${opt('cash')}${opt('transfer')}${opt('balance')}</select></div>
+          <div><label class="fl" style="font-size:.58rem">غير مدفوع</label><label style="display:flex;align-items:center;gap:.28rem;background:rgba(232,67,147,.08);border:1px solid rgba(232,67,147,.32);border-radius:7px;padding:.26rem .45rem;cursor:pointer;height:27px;box-sizing:border-box"><input type="checkbox" class="bidt" style="width:14px;height:14px;accent-color:var(--er);cursor:pointer" onchange="const r=this.closest('.brow'),p=r.querySelector('.bpay');p.disabled=this.checked;p.style.opacity=this.checked?'.35':'1';"><span style="font-size:.63rem;font-weight:800;color:var(--er);white-space:nowrap">💸 دين</span></label></div>
         </div>
       </div>`;
     }).join('');
@@ -10019,7 +10021,7 @@ window.setBulkWin = setBulkWin; window.setBulkBase = setBulkBase;
 function execBulkRenew() {
   const rows=[...document.querySelectorAll('#bulkList .brow')].filter(r=>{const k=r.querySelector('.bulk-chk');return k&&k.checked;});
   if(!rows.length){notify('⚠️ اختر اشتراكاً واحداً على الأقل','wa');return;}
-  const dbt = rows.filter(r=>r.querySelector('.bpay').value==='debt').length;
+  const dbt = rows.filter(r=>r.querySelector('.bidt') && r.querySelector('.bidt').checked).length;
   showConfirm({icon:'🔄',title:'تأكيد التجديد الدفعي',
     msg:`سيتم تجديد ${rows.length} اشتراك دفعةً واحدة.${dbt?`<br><b style="color:var(--er)">${dbt} منها ستُسجَّل ديناً (لا إيراد حتى السداد)</b>`:''}<br><span style="font-size:.68rem;color:var(--mu)">يمكنك التراجع بعدها مباشرةً.</span>`,
     okLabel:`✅ تجديد ${rows.length}`, okClass:'bp',
@@ -10034,9 +10036,10 @@ function execBulkRenew() {
         const months=Math.min(RENEW_MAX_MONTHS,Math.max(1,parseInt(el.querySelector('.bmn').value)||1));
         const price=el.querySelector('.bpr').value;
         const cost=el.querySelector('.bcst').value;
-        const pay=el.querySelector('.bpay').value;
+        const asDebt=!!(el.querySelector('.bidt')||{}).checked;
+        const pay=asDebt?'debt':el.querySelector('.bpay').value;
         if(_renewSub(cust, s, {months, price, cost, pay, base: du(s.expiry)<0?_bulkBase:'exp'})){
-          cust.updatedAt=new Date().toISOString(); count++; if(pay==='debt') dcount++;
+          cust.updatedAt=new Date().toISOString(); count++; if(asDebt) dcount++;
         }
       });
       _log('bulk_renew','تجديد دفعي '+count+' اشتراك'+(dcount?' ('+dcount+' بالدين)':''));
