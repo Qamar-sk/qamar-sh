@@ -2876,7 +2876,7 @@ function _startCalToday(btn) {
   const pop = document.getElementById('_startCalPop');
   const fr = pop.closest('.fr');
   const input = fr.querySelector('.se-start');
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = ymdNow();
   setDV(input, todayISO);
   calcExp(input.closest('.sent'));
   pop.remove();
@@ -2945,6 +2945,32 @@ const du = d => {
   const r = Math.round((t-now)/86400000);
   return isNaN(r) ? 9999 : r;
 };
+// ══════════════════════════════════════════
+// DATE ENGINE — تواريخ محلية بحتة (لا UTC إطلاقاً) + قصّ نهاية الشهر
+// ══════════════════════════════════════════
+// اليوم بصيغة YYYY-MM-DD بالتوقيت المحلي (بديل آمن لـ toISOString)
+const ymdNow = () => { const d=new Date(); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); };
+// عدد أيام شهر معيّن
+const _dim = (y,m) => new Date(y, m, 0).getDate(); // m = 1..12
+// إضافة أشهر بحساب تقويمي صحيح مع قصّ اليوم إلى آخر يوم في الشهر الهدف
+// 2026-01-31 + 1 = 2026-02-28   |   2026-08-31 + 1 = 2026-09-30
+const addMonths = (ymd, months) => {
+  const m0 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd||''));
+  if(!m0) return '';
+  let y = +m0[1], mo = +m0[2], d = +m0[3];
+  const add = parseInt(months) || 0;
+  const total = (y*12 + (mo-1)) + add;
+  y = Math.floor(total/12); mo = (total%12)+1;
+  const last = _dim(y, mo);
+  if(d > last) d = last;              // قصّ نهاية الشهر
+  const p=n=>String(n).padStart(2,'0');
+  return y+'-'+p(mo)+'-'+p(d);
+};
+// توحيد مفتاح طريقة الدفع (يقبل المفاتيح الإنجليزية والقيم العربية القديمة)
+const PMAR = {'كاش':'cash','حوالة':'transfer','رصيد':'balance','دين':'debt'};
+const pmKey = v => { const s=String(v||'').trim(); if(PM[s]) return s; if(PMAR[s]) return PMAR[s]; return 'cash'; };
+const pmLabel = v => { const k=pmKey(v); return k==='debt' ? 'دين' : ((PM[k]||{}).l || ''); };
+
 const hl = (str,q) => {
   if (!str||!q) return String(str||'');
   const s=String(str),lo=s.toLowerCase(),lq=q.toLowerCase();
@@ -3086,11 +3112,18 @@ function buildSalesLog() {
           sales.push({ date:(p.at||'').slice(0,10)||s.start||(c.createdAt||'').slice(0,10), price:a, cost:first?(s.cost!=null&&s.cost!==''?n2(s.cost):0):0, label:c.name+' — '+s.service, kind:'debt_pay', cid:c.id }); first=false;
         });
       } else if(s.start){
-        sales.push({ date: s.start, price: _origPrice(s), cost: (s.cost!=null&&s.cost!==''?n2(s.cost):0), label: c.name + ' — ' + s.service, kind: 'new', cid: c.id });
+        sales.push({ date: s.start, price: _origPrice(s), cost: (s.cost!=null&&s.cost!==''?n2(s.cost):0), label: c.name + ' — ' + s.service, kind: 'new', pay: pmKey(s.payMethod), cid: c.id });
       }
       (s.renewHistory||[]).forEach(r => {
         const d = (r.renewedAt||'').slice(0,10) || r.start;
-        if(d) sales.push({ date: d, price: n2(r.price||s.price), cost: (r.cost!=null&&r.cost!==''?n2(r.cost):(s.cost!=null&&s.cost!==''?n2(s.cost):0)), label: c.name + ' — ' + s.service, kind: 'renew', cid: c.id });
+        if(!d) return;
+        const rcost = (r.cost!=null&&r.cost!==''?n2(r.cost):(s.cost!=null&&s.cost!==''?n2(s.cost):0));
+        // تجديد بالدين: الإيراد يأتي من دفعات الدين (manualDebts) — نسجّل التكلفة فقط وقت التجديد
+        if(r.isDebt){
+          if(rcost>0) sales.push({ date: d, price: 0, cost: rcost, label: c.name + ' — ' + s.service + ' (تجديد دين)', kind: 'renew_debt', pay: 'debt', cid: c.id });
+          return;
+        }
+        sales.push({ date: d, price: n2(r.price||s.price), cost: rcost, label: c.name + ' — ' + s.service, kind: 'renew', pay: pmKey(r.pay||s.payMethod), cid: c.id });
       });
     });
     // دفعات ديون الكروت المجمّعة
@@ -3111,8 +3144,11 @@ function buildSalesLog() {
     const pays=(Array.isArray(d._payments)&&d._payments.length)?d._payments.slice():(n2(d.paidAmount)>0?[{amt:n2(d.paidAmount),at:d.depositAt||d.date||(d.createdAt||'')}]:[]);
     const _sum=pays.reduce((a,p)=>a+n2(p.amt),0);
     if(d.paid && _sum < _full-0.001) pays.push({amt:_full-_sum, at:d.paidAt||d.depositAt||d.date||(d.createdAt||'')});
+    let _f=true;
     pays.forEach(p=>{ const a=n2(p.amt); if(a<=0) return;
-      sales.push({ date:(p.at||'').slice(0,10)||d.date||'', price:a, cost:0, label:(cust?cust.name:'—')+' — '+(d.service||d.note||'دين'), kind:'debt_pay', cid:d.customerId });
+      // تكلفة الدين تُحتسب مرة واحدة عند أول دفعة (لديون التجديد التي تحمل تكلفة)
+      const _c = (_f && d.cost!=null && d.cost!=='' && !d.renewRef) ? n2(d.cost) : 0; _f=false;
+      sales.push({ date:(p.at||'').slice(0,10)||d.date||'', price:a, cost:_c, label:(cust?cust.name:'—')+' — '+(d.service||d.note||'دين'), kind:'debt_pay', pay:'cash', cid:d.customerId });
     });
   });
   db.cards.filter(c => c.status==='used' && c.soldAt && !c.personalUse && !c.soldAsDebt).forEach(card => {
@@ -3186,6 +3222,22 @@ function ensureC(c) {
     if(s.isDebt && !s.debtCreatedAt) s.debtCreatedAt = s.start || c.createdAt || '';
     // التقط تكلفة الاشتراك الجديد فقط وقت إنشائه (القديم الفارغ يبقى فارغاً = صفر)
     if(!s._legacyCost && (s.cost==null||s.cost==='') && (s.start||s.isDebt)) s.cost = gCost(s);
+    // ── ترحيل سجل التجديد: معرّف فريد + توحيد طريقة الدفع + إزالة التكرار (حماية المزامنة) ──
+    if(Array.isArray(s.renewHistory) && s.renewHistory.length){
+      const seenR = new Set();
+      s.renewHistory = s.renewHistory.filter(r=>{
+        if(!r) return false;
+        if(!r.id) r.id = uid();
+        r.pay = pmKey(r.pay || s.payMethod);
+        if(r.isDebt === undefined) r.isDebt = false;
+        // بصمة العملية: نفس الفترة + نفس لحظة التجديد = سجل مكرّر
+        const fp = (r.id) + '|' + (r.from||'') + '|' + (r.to||'') + '|' + (r.renewedAt||'');
+        const fp2 = (r.from||'') + '|' + (r.to||'') + '|' + (r.renewedAt||'');
+        if(seenR.has(fp2)) return false;
+        seenR.add(fp2); seenR.add(fp);
+        return true;
+      });
+    }
   });
 }
 function ensureK(c) {
@@ -3761,7 +3813,7 @@ function rCList() {
   const g=document.getElementById('cg');
   const q=(document.getElementById('csi').value||'').trim();
   const sort=document.getElementById('sortSel').value||'mod';
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = ymdNow();
   const ym = todayISO.slice(0,7);
 
   // فهرسة الكروت حسب الزبون مرة واحدة (بدل مسح كل الكروت لكل زبون)
@@ -3843,7 +3895,7 @@ function rCList() {
     // شريحة الهامش (منفصلة عن الدين)
     const marginH = m.cost>0 ? `<span style="font-size:.58rem;font-weight:700;padding:.04rem .32rem;border-radius:20px;background:${m.margin>=0?'rgba(0,184,148,.1)':'rgba(232,67,147,.1)'};color:${m.margin>=0?'var(--ok)':'var(--er)'}">هامش: ${m.margin>=0?'+':''}${m.margin.toFixed(0)} ${CUR}</span>` : '';
     const debtH = hd ? `<span style="background:rgba(232,67,147,.12);color:var(--er);border:1px solid rgba(232,67,147,.28);font-size:.58rem;font-weight:700;padding:.04rem .32rem;border-radius:20px">⚠️ دين ${td.toFixed(0)} ${CUR}</span>` : '';
-    const fuH = c.followUp ? `<span style="font-size:.56rem;font-weight:700;padding:.03rem .3rem;border-radius:20px;background:${c.followUp<=new Date().toISOString().slice(0,10)?'rgba(255,184,48,.14)':'var(--s2)'};color:var(--wa)">📅 ${toDMY(c.followUp)}</span>` : '';
+    const fuH = c.followUp ? `<span style="font-size:.56rem;font-weight:700;padding:.03rem .3rem;border-radius:20px;background:${c.followUp<=ymdNow()?'rgba(255,184,48,.14)':'var(--s2)'};color:var(--wa)">📅 ${toDMY(c.followUp)}</span>` : '';
     // وضع التحديد
     const sel=_selCust.has(c.id);
     const onClickAttr = _selMode ? `toggleSelCust('${c.id}')` : `viewC('${c.id}')`;
@@ -3995,7 +4047,7 @@ function _exportCustsCSV(list, fname){
   });
   const csv='\uFEFF'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname+'_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname+'_'+ymdNow()+'.csv'; a.click();
   notify(`📤 تم تصدير ${list.length} زبون`);
 }
 function bulkExport(){ _exportCustsCSV(_selectedCusts(), 'customers_selected'); }
@@ -4541,7 +4593,7 @@ function saveCust(){
     // حفظ تاريخ الإلغاء إذا تم إلغاء الاشتراك
     const sid0 = e.dataset.sid;
     const prevSubC = sid0 && eId ? (() => { const pc=db.customers.find(x=>x.id===eId); return pc ? (pc.subscriptions||[]).find(x=>x.id===sid0) : null; })() : null;
-    const cancelledAt = cancelled ? ((prevSubC && prevSubC.cancelledAt) || new Date().toISOString().slice(0,10)) : '';
+    const cancelledAt = cancelled ? ((prevSubC && prevSubC.cancelledAt) || ymdNow()) : '';
     const drRaw=e.querySelector('.se-da').value,debtPaid=e.dataset.dp==='1';
     let debtAmount=''; if(isDebt){const dr=parseFloat(drRaw);debtAmount=(!isNaN(dr)&&dr>=0)?dr:(price!==''?price:0);}
     // الحفاظ على تاريخ إنشاء الدين الأصلي إن وُجد، أو تسجيله الآن إذا كان ديناً جديداً
@@ -4604,12 +4656,12 @@ function delC(id){const c=db.customers.find(x=>x.id===id);showConfirm({icon:'�
 function openRenew(id){
   const c=db.customers.find(x=>x.id===id); if(!c) return;
   renewCid=id;
-  const subs=(c.subscriptions||[]).filter(s=>!s.isCardGroup&&s.expiry);
-  if(!subs.length){notify('لا يوجد اشتراكات بتاريخ انتهاء','wa');return;}
+  const subs=(c.subscriptions||[]).filter(s=>!s.isCardGroup&&!s.cancelled&&s.expiry);
+  if(!subs.length){notify('لا يوجد اشتراكات قابلة للتجديد','wa');return;}
   const hasExp=subs.some(s=>du(s.expiry)<0);
   let ch='';
   if(hasExp){
-    const td=toDMY(new Date().toISOString().slice(0,10));
+    const td=toDMY(ymdNow());
     ch=`<div style="background:rgba(108,92,231,.06);border:1px solid rgba(108,92,231,.22);border-radius:7px;padding:.55rem .75rem;margin-bottom:.75rem"><div style="font-size:.7rem;font-weight:700;color:var(--mu);margin-bottom:.4rem">📅 أساس التجديد للمنتهية</div><div style="display:flex;gap:.4rem"><button id="rb1" onclick="setRB('exp')" class="utb us" style="flex:1;font-size:.7rem">📆 من تاريخ الانتهاء</button><button id="rb2" onclick="setRB('now')" class="utb" style="flex:1;font-size:.7rem">📅 من اليوم (${td})</button></div></div>`;
   }
   renewBase='exp';
@@ -4619,73 +4671,114 @@ function openRenew(id){
     const p=gP(s.service);
     const tOpts=p.tiers.map(t=>{const m=p.type==='months'?(Number(t.months)||1):1;const lb=p.type==='months'?(t.months?t.months+' شهر':'—'):(t.label||'—');return`<option value="${m}" data-p="${t.price!=null&&t.price!==''?t.price:''}" data-c="${t.costPrice!=null&&t.costPrice!==''?t.costPrice:''}">${lb}</option>`;}).join('');
     const isExp=du(s.expiry)<0;
-    return`<div class="sent" data-sid="${s.id}" style="margin-bottom:.4rem"><div style="display:flex;align-items:center;gap:.35rem;margin-bottom:.35rem;flex-wrap:wrap"><input type="checkbox" class="rchk" checked title="تجديد هذا الاشتراك" style="width:17px;height:17px;accent-color:var(--ac);cursor:pointer;flex-shrink:0"><div style="width:7px;height:7px;border-radius:50%;background:${srv.color}"></div><strong style="font-size:.8rem">${s.service}</strong><span style="font-size:.63rem;color:${isExp?'var(--er)':'var(--mu)'}" dir="ltr">${toDMY(s.expiry)}${isExp?' (منتهي)':''}</span></div><div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:flex-end"><div><label class="fl" style="font-size:.61rem">الباقات</label><select class="fs rsel" style="font-size:.71rem;padding:.25rem .42rem" onchange="const o=this.options[this.selectedIndex],r=this.closest('.sent');r.querySelector('.rmn').value=this.value;if(o.dataset.p!=='')r.querySelector('.rpr').value=o.dataset.p;if(o.dataset.c!=='')r.querySelector('.rcst').value=o.dataset.c;">${tOpts||'<option value="1">1 شهر</option>'}</select></div><div><label class="fl" style="font-size:.61rem">يدوي (شهر)</label><input class="fi rmn" type="number" min="1" max="60" value="${Number(s.months)||1}" style="font-size:.71rem;padding:.25rem .42rem;width:64px"></div><div><label class="fl" style="font-size:.61rem">السعر (بيع)</label><input class="fi rpr" type="number" min="0" step="0.01" value="${s.price!=null&&s.price!==''?s.price:''}" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">التكلفة (شراء)</label><input class="fi rcst" type="number" min="0" step="0.01" value="${gCost(s)||''}" placeholder="0.00" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">طريقة الدفع</label><select class="fs rpay" style="font-size:.71rem;padding:.25rem .42rem"><option value="كاش">💵 كاش</option><option value="حوالة">🏦 حوالة</option><option value="رصيد">📲 رصيد</option></select></div></div></div>`;
+    return`<div class="sent" data-sid="${s.id}" style="margin-bottom:.4rem"><div style="display:flex;align-items:center;gap:.35rem;margin-bottom:.35rem;flex-wrap:wrap"><input type="checkbox" class="rchk" checked title="تجديد هذا الاشتراك" style="width:17px;height:17px;accent-color:var(--ac);cursor:pointer;flex-shrink:0"><div style="width:7px;height:7px;border-radius:50%;background:${srv.color}"></div><strong style="font-size:.8rem">${s.service}</strong><span style="font-size:.63rem;color:${isExp?'var(--er)':'var(--mu)'}" dir="ltr">${toDMY(s.expiry)}${isExp?' (منتهي)':''}</span></div><div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:flex-end"><div><label class="fl" style="font-size:.61rem">الباقات</label><select class="fs rsel" style="font-size:.71rem;padding:.25rem .42rem" onchange="const o=this.options[this.selectedIndex],r=this.closest('.sent');r.querySelector('.rmn').value=this.value;if(o.dataset.p!=='')r.querySelector('.rpr').value=o.dataset.p;if(o.dataset.c!=='')r.querySelector('.rcst').value=o.dataset.c;">${tOpts||'<option value="1">1 شهر</option>'}</select></div><div><label class="fl" style="font-size:.61rem">يدوي (شهر)</label><input class="fi rmn" type="number" min="1" max="60" value="${Number(s.months)||1}" style="font-size:.71rem;padding:.25rem .42rem;width:64px"></div><div><label class="fl" style="font-size:.61rem">السعر (بيع)</label><input class="fi rpr" type="number" min="0" step="0.01" value="${s.price!=null&&s.price!==''?s.price:''}" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">التكلفة (شراء)</label><input class="fi rcst" type="number" min="0" step="0.01" value="${gCost(s)||''}" placeholder="0.00" style="font-size:.71rem;padding:.25rem .42rem;width:74px"></div><div><label class="fl" style="font-size:.61rem">طريقة الدفع</label><select class="fs rpay" style="font-size:.71rem;padding:.25rem .42rem"><option value="cash">💵 كاش</option><option value="transfer">🏦 حوالة</option><option value="balance">📲 رصيد</option><option value="debt">💸 دين (آجل)</option></select></div></div></div>`;
   }).join('');
   om('mRenew');
 }
 function setRB(m){
   renewBase=m;
   const b1=document.getElementById('rb1'),b2=document.getElementById('rb2');
-  if(b1){b1.className='utb'+(m==='exp'?' us':'');b2.className='utb'+(m==='now'?' uc':'');}
+  if(b1){b1.className='utb'+(m==='exp'?' us':'');b2.className='utb'+(m==='now'?' us':'');}
 }
 function applyRenew(){
   const c=db.customers.find(x=>x.id===renewCid); if(!c) return;
   // تأكّد من وجود تحديد واحد على الأقل
   const checkedRows=[...document.querySelectorAll('#renewList .sent')].filter(el=>{const k=el.querySelector('.rchk');return !k||k.checked;});
   if(!checkedRows.length){ notify('⚠️ حدّد اشتراكاً واحداً على الأقل للتجديد','wa'); return; }
-  let cnt=0;
+  let cnt=0, dbtCnt=0; _renewWarn=[];
   document.querySelectorAll('#renewList .sent').forEach(el=>{
     const chk=el.querySelector('.rchk');
     if(chk && !chk.checked) return; // تخطّي الاشتراكات غير المحدّدة
     const sid=el.dataset.sid,s=(c.subscriptions||[]).find(x=>x.id===sid);if(!s||!s.expiry) return;
-    const months=Math.max(1,parseInt(el.querySelector('.rmn').value)||1);
+    const months=Math.min(RENEW_MAX_MONTHS,Math.max(1,parseInt(el.querySelector('.rmn').value)||1));
     const prRaw=el.querySelector('.rpr').value;
     const cstRaw=(el.querySelector('.rcst')||{}).value;
     const payRaw=(el.querySelector('.rpay')||{}).value||'';
-    if(_renewSub(c, s, {months, base: renewBase, price: prRaw, cost: cstRaw, pay: payRaw})) cnt++;
+    if(_renewSub(c, s, {months, base: renewBase, price: prRaw, cost: cstRaw, pay: payRaw})){ cnt++; if(pmKey(payRaw)==='debt') dbtCnt++; }
   });
   c.updatedAt=new Date().toISOString();
-  save();cm('mRenew');rC();if(document.getElementById('mView').classList.contains('on'))viewC(renewCid);
-  _log('renew', c.name+' — تجديد '+cnt+' اشتراك');
-  notify(`✅ تم تجديد ${cnt} اشتراك`);
+  save();cm('mRenew');rC();
+  if(typeof rDebts==='function') rDebts();
+  if(typeof rUBan==='function') rUBan();
+  if(document.getElementById('mView').classList.contains('on'))viewC(renewCid);
+  _log('renew', c.name+' — تجديد '+cnt+' اشتراك'+(dbtCnt?' ('+dbtCnt+' بالدين)':''));
+  notify(`✅ تم تجديد ${cnt} اشتراك`+(dbtCnt?` · ${dbtCnt} سُجّل ديناً`:''));
+  _flushRenewWarn();
 }
 // ══════════════════════════════════════════
 // RENEW — دالة التجديد الموحّدة (مصدر واحد لكل المسارات)
 // ══════════════════════════════════════════
 // opts: { months, base:'exp'|'now', price }
 // تُرجع true عند النجاح، وتسجّل السعر المطبَّق فعلاً في السجل (لإيراد صحيح)
+const RENEW_MAX_MONTHS = 60;
 function _renewSub(c, s, opts){
   opts = opts || {};
   if(!s || !s.expiry) return false;
+  if(s.isCardGroup) return false;
+  if(s.cancelled) return false;                       // 🔒 لا تجديد لاشتراك ملغى
   const isExp = du(s.expiry) < 0;
-  const months = Math.max(1, parseInt(opts.months) || Number(s.months) || 1);
+  let months = parseInt(opts.months) || Number(s.months) || 1;
+  months = Math.min(RENEW_MAX_MONTHS, Math.max(1, months));   // 🔒 حد أقصى فعلي
   const fromToday = isExp && (opts.base === 'now'); // للمنتهية فقط: من اليوم بدل تاريخ الانتهاء
-  let base = fromToday ? new Date() : new Date(s.expiry + 'T00:00:00');
-  if(isNaN(base.getTime())) return false;
   const prevExpiry = s.expiry, prevPrice = n2(s.price);
-  base.setMonth(base.getMonth() + months);
-  const newExpiry = base.toISOString().slice(0,10);
+  const baseYmd = fromToday ? ymdNow() : String(prevExpiry).slice(0,10);
+  const newExpiry = addMonths(baseYmd, months);      // ✅ حساب محلي بحت + قصّ نهاية الشهر
+  if(!newExpiry) return false;
   // بداية الفترة الجديدة: من تاريخ الانتهاء السابق (أو من اليوم للمنتهية)
-  const periodStart = fromToday ? new Date().toISOString().slice(0,10) : prevExpiry;
+  const periodStart = fromToday ? ymdNow() : String(prevExpiry).slice(0,10);
   // السعر المطبَّق فعلاً (الجديد إن أُدخل وصحيح، وإلا الحالي)
   let appliedPrice = prevPrice;
   if(opts.price !== undefined && opts.price !== '' && !isNaN(Number(opts.price)) && Number(opts.price) >= 0)
     appliedPrice = Number(opts.price);
-  // التكلفة المطبَّقة فعلاً (الجديدة إن أُدخلت وصحيحة، وإلا تكلفة الشريحة)
-  let appliedCost = gCost(s);
+  // التكلفة المطبَّقة فعلاً — الفارغ يبقى فارغاً (لا يتحوّل إلى صفر)
+  const ci = gCostInfo(s);
+  let appliedCost = ci.matched ? n2(ci.cost) : '';
   if(opts.cost !== undefined && opts.cost !== '' && !isNaN(Number(opts.cost)) && Number(opts.cost) >= 0)
     appliedCost = Number(opts.cost);
+  // 🔒 تجميد قيمة الدين القديم قبل تغيير السعر (subDV يعتمد على price عند غياب debtAmount)
+  if(s.isDebt && !s.debtPaid && (s.debtAmount==null || s.debtAmount==='')) s.debtAmount = prevPrice;
   // احفظ سعر الفترة الأصلية مرة واحدة (للحفاظ على إيرادها وعرضها)
   if(s.origPrice == null) s.origPrice = n2(s.price);
+  const payK = pmKey(opts.pay || s.payMethod || 'cash');
+  const asDebt = (payK === 'debt');
   if(!s.renewHistory) s.renewHistory = [];
-  s.renewHistory.push({
+  const entry = {
+    id: uid(),                                       // 🔒 معرّف فريد (منع التكرار عند المزامنة)
     from: prevExpiry, to: newExpiry, start: periodStart,
     months: months, price: appliedPrice, prevPrice: prevPrice, cost: appliedCost,
-    pay: opts.pay || '', renewedAt: new Date().toISOString()
-  });
+    pay: payK, isDebt: asDebt, renewedAt: new Date().toISOString()
+  };
+  s.renewHistory.push(entry);
+  // 💸 تجديد بالدين: يُسجَّل ديناً — لا يُحتسب إيراداً حتى السداد الفعلي
+  if(asDebt && appliedPrice > 0){
+    if(!Array.isArray(db.manualDebts)) db.manualDebts = [];
+    db.manualDebts.push({
+      id: uid(), customerId: c.id, service: s.service,
+      amount: appliedPrice, cost: (appliedCost===''?'':n2(appliedCost)),
+      note: 'تجديد ' + (s.service||'') + ' — ' + months + 'ش',
+      date: ymdNow(), paid: false, paidAmount: 0,
+      renewRef: entry.id, subId: s.id,
+      createdAt: new Date().toISOString()
+    });
+  }
   s.expiry = newExpiry; s.months = months;
   s.price = appliedPrice; // السعر الحالي = آخر تجديد (للعرض)؛ الأصلي محفوظ في origPrice و s.start لم يتغيّر
+  // ⚠️ تنبيه ربط الحساب المورد
+  if(s.accountId){
+    const a = gAcct(s.accountId);
+    if(a && a.active === false) _renewWarn.push('⚠️ ' + (s.service||'') + ': الحساب المورد موقوف');
+    else if(a && a.nextPaymentDate && a.nextPaymentDate < newExpiry)
+      _renewWarn.push('⚠️ ' + (s.service||'') + ': تاريخ دفع الحساب المورد (' + toDMY(a.nextPaymentDate) + ') قبل انتهاء الزبون');
+  }
+  // ⚠️ تنبيه: التجديد من تاريخ الانتهاء أنتج تاريخاً في الماضي
+  if(du(newExpiry) < 0) _renewWarn.push('⚠️ ' + (s.service||'') + ': ما زال منتهياً بعد التجديد (' + toDMY(newExpiry) + ') — استخدم «من اليوم»');
   return true;
+}
+let _renewWarn = [];
+function _flushRenewWarn(){
+  if(!_renewWarn.length) return;
+  const msgs = [...new Set(_renewWarn)]; _renewWarn = [];
+  setTimeout(()=>notify(msgs.slice(0,3).join(' · '), 'wa'), 900);
 }
 
 // السعر الأصلي للفترة الأولى (مع استرجاع من السجل للبيانات القديمة)
@@ -4695,48 +4788,37 @@ function _origPrice(s){
   return n2(s.price);
 }
 
+let _qRenewLock = false;
 function qRenew(cid,sid,newPriceRaw){
+  if(_qRenewLock) return;                                   // 🔒 حماية من النقر المزدوج
   const c=db.customers.find(x=>x.id===cid);if(!c)return;
   const s=(c.subscriptions||[]).find(x=>x.id===sid);if(!s||!s.expiry)return;
-  // للمنتهية: السلوك الافتراضي من اليوم (كما كان)
-  if(!_renewSub(c, s, {price:newPriceRaw, base: du(s.expiry)<0?'now':'exp'})) return;
-  const last=s.renewHistory[s.renewHistory.length-1];
-  const m=last.months, newPrice=last.price, prevPrice=last.prevPrice;
-  c.updatedAt=new Date().toISOString();save();rC();rUBan();
-  if(document.getElementById('mView').classList.contains('on'))viewC(cid);
-  _log('renew', c.name+' — '+s.service+' +'+m+'ش'+(newPrice!==prevPrice?' (سعر جديد: '+newPrice+' '+CUR+')':''));
-  notify(`✅ تم التجديد +${m}ش${newPrice!==prevPrice?' · سعر: '+newPrice+' '+CUR:''}`);
-}
-function _qRenewOld(cid,sid,newPriceRaw){
-  const c=db.customers.find(x=>x.id===cid);if(!c)return;
-  const s=(c.subscriptions||[]).find(x=>x.id===sid);if(!s||!s.expiry)return;
-  const prevStart=s.start||'';const prevExpiry=s.expiry;const prevPrice=s.price;
-  // السعر الجديد: إذا أدخل المستخدم قيمة يستخدمها، وإلا يبقى القديم
-  const newPrice = (newPriceRaw!==undefined&&newPriceRaw!==''&&!isNaN(Number(newPriceRaw)))
-    ? Number(newPriceRaw) : prevPrice;
-  const base=du(s.expiry)<0?new Date():new Date(s.expiry+'T00:00:00');if(isNaN(base.getTime()))return;
-  const m=Number(s.months)||1;base.setMonth(base.getMonth()+m);
-  const newExpiry=base.toISOString().slice(0,10);
-  const newStart=new Date().toISOString().slice(0,10);
-  // Log renewal history
-  if(!s.renewHistory) s.renewHistory=[];
-  s.renewHistory.push({
-    from: prevExpiry,
-    to: newExpiry,
-    start: newStart,
-    months: m,
-    price: newPrice,
-    prevPrice: prevPrice,
-    renewedAt: new Date().toISOString()
+  if(s.cancelled){ notify('⚠️ اشتراك ملغى — لا يمكن تجديده','wa'); return; }
+  _qRenewLock = true;
+  setTimeout(()=>{ _qRenewLock = false; }, 1200);
+  const m0 = Math.min(RENEW_MAX_MONTHS, Math.max(1, Number(s.months)||1));
+  const pr = (newPriceRaw!==undefined&&newPriceRaw!==''&&!isNaN(Number(newPriceRaw))) ? Number(newPriceRaw) : n2(s.price);
+  const preview = addMonths(du(s.expiry)<0 ? ymdNow() : String(s.expiry).slice(0,10), m0);
+  showConfirm({icon:'⚡',title:'تأكيد التجديد السريع',
+    msg:`${c.name} — ${s.service}<br>+${m0} شهر · ${pr} ${CUR}<br>ينتهي: <b dir="ltr">${toDMY(preview)}</b><br><span style="font-size:.68rem;color:var(--mu)">طريقة الدفع: ${pmLabel(s.payMethod)} — لتغييرها أو التسجيل كدين استخدم 🔄 تجديد</span>`,
+    okLabel:'⚡ تجديد', okClass:'br',
+    onOk:()=>{
+      _renewWarn=[];
+      if(!_renewSub(c, s, {price:newPriceRaw, base: du(s.expiry)<0?'now':'exp', pay: s.payMethod})){ _qRenewLock=false; return; }
+      const last=s.renewHistory[s.renewHistory.length-1];
+      const m=last.months, newPrice=last.price, prevPrice=last.prevPrice;
+      c.updatedAt=new Date().toISOString();save();rC();rUBan();
+      if(typeof rDebts==='function') rDebts();
+      if(document.getElementById('mView').classList.contains('on'))viewC(cid);
+      _log('renew', c.name+' — '+s.service+' +'+m+'ش'+(newPrice!==prevPrice?' (سعر جديد: '+newPrice+' '+CUR+')':''));
+      notify(`✅ تم التجديد +${m}ش${newPrice!==prevPrice?' · سعر: '+newPrice+' '+CUR:''}`);
+      _flushRenewWarn();
+      _qRenewLock = false;
+    },
+    onCancel:()=>{ _qRenewLock = false; }
   });
-  s.expiry=newExpiry; s.start=newStart;
-  // حفظ السعر الجديد على الاشتراك لو اختلف
-  if(newPrice !== prevPrice) s.price = newPrice;
-  c.updatedAt=new Date().toISOString();save();rC();rUBan();
-  if(document.getElementById('mView').classList.contains('on'))viewC(cid);
-  _log('renew', c.name+' — '+s.service+' +'+m+'ش'+(newPrice!==prevPrice?' (سعر جديد: '+newPrice+' '+CUR+')':''));
-  notify(`✅ تم التجديد +${m}ش${newPrice!==prevPrice?' · سعر: '+newPrice+' '+CUR:''}`);
 }
+// [محذوف] _qRenewOld — كود ميت كان يفسد s.start
 
 // ══════════════════════════════════════════
 // COPY / REVEAL
@@ -4989,7 +5071,7 @@ function applyReplace(){
   const acct=db.accounts.find(x=>x.id===aid);
   if(oldS){oldS.accountId='';oldS.profileSlot='';}
   const newC=db.customers.find(x=>x.id===newCid);
-  if(newC&&acct){if(!Array.isArray(newC.subscriptions))newC.subscriptions=[];newC.subscriptions.push({id:uid(),service:acct.service,accountId:aid,account:'',password:'',start:new Date().toISOString().slice(0,10),expiry:'',months:'',tierLabel:'',price:'',payMethod:'cash',isDebt:false,debtPaid:false,debtAmount:'',profileSlot:newP});newC.updatedAt=new Date().toISOString();}
+  if(newC&&acct){if(!Array.isArray(newC.subscriptions))newC.subscriptions=[];newC.subscriptions.push({id:uid(),service:acct.service,accountId:aid,account:'',password:'',start:ymdNow(),expiry:'',months:'',tierLabel:'',price:'',payMethod:'cash',isDebt:false,debtPaid:false,debtAmount:'',profileSlot:newP});newC.updatedAt=new Date().toISOString();}
   save();cm('mReplace');rA();rC();notify('✅ تم الاستبدال — '+(newC?newC.name:'')+(newP?' ('+newP+')':''));
 }
 
@@ -5022,7 +5104,7 @@ function rK(){
   if(!list.length){const isS=(document.getElementById('ksi').value||'').trim()||kFilt!=='all'||kTypeFilt;g.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="empty-i">${isS?'🔍':'💳'}</div><div class="empty-t">${isS?'لا نتائج مطابقة':'لا توجد كروت بعد'}</div><div class="empty-s">${isS?'جرب بحثاً مختلفاً':'أضف كروتك لتتبع مخزونك ومبيعاتك'}</div>${isS?'':'<button class="btn bc" onclick="openCardM()">➕ إضافة كرت</button>'}</div>`;return;}
   const av=list.filter(c=>c.status!=='used');
   const used=list.filter(c=>c.status==='used');
-  const todayISO=new Date().toISOString().slice(0,10);
+  const todayISO=ymdNow();
   const rK2=card=>{
     const srv=db.services.find(x=>x.name===card.type)||{color:'var(--cd)'};
     const isUsed=card.status==='used';const ci='cd'+card.id;
@@ -5293,7 +5375,7 @@ function openCardM(id=null){
     document.getElementById('kVal').value='';
     document.getElementById('kCost').value='';
     setDV(document.getElementById('kExp'),'');
-    setDV(document.getElementById('kDate'),new Date().toISOString().slice(0,10));
+    setDV(document.getElementById('kDate'),ymdNow());
     if(kTypeFilt&&db.services.some(s=>s.name===kTypeFilt))typeSel.value=kTypeFilt;
     onKTC();
   }
@@ -5444,7 +5526,7 @@ function getAlerts(){
   const th  = Number(db.settings.alertDays)||3;          // عتبة الاشتراكات (يتحكم بها المستخدم)
   const tha = Number(db.settings.alertAcctDays)||5;       // عتبة تجديد الحسابات
   const snz = db.settings.snoozed||{};
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = ymdNow();
   const isSnz = k => snz[k]===todayISO;
   const r=[];
   // اشتراكات الزبائن
@@ -6076,13 +6158,14 @@ function rFinance(){
     </div>`
   ) : '';
 
-  // § 8: طرق الدفع
+  // § 8: طرق الدفع — من سجل العمليات الفعلي (بيع + تجديد + كروت + سداد ديون)
   const byPay = {};
-  allSubs.forEach(s => {
-    const m = mof(s);
+  buildSalesLog().forEach(e => {
+    if(n2(e.price) <= 0) return;                 // تجاهل قيود التكلفة فقط
+    const m = pmKey(e.pay || 'cash');
     if(!byPay[m]) byPay[m]={cnt:0,rev:0};
     byPay[m].cnt++;
-    byPay[m].rev += n2(s.price);
+    byPay[m].rev += n2(e.price);
   });
   const payList  = Object.entries(byPay).sort((a,b)=>b[1].rev-a[1].rev);
   const maxPayRev= Math.max(...payList.map(([,d])=>d.rev),1);
@@ -6270,13 +6353,18 @@ function rMonthly() {
         const rDate = (r.renewedAt||r.start||'').slice(0,10);
         if(rDate && rDate.slice(0,7) === ym) {
           const ce = ensureCust(c);
+          const rp = n2(r.price||s.price), rc = (r.cost!=null&&r.cost!=='')?n2(r.cost):cost;
           ce.events.push({
-            type:'renew', service:s.service, price:n2(r.price||s.price), cost:(r.cost!=null?n2(r.cost):cost),
-            date:rDate, months:r.months||1, payMethod:mof(s),
-            isDebt:false, debtPaid:false, cancelled:false
+            type: r.isDebt ? 'debt_sub' : 'renew', service:s.service, price:rp, cost:rc,
+            date:rDate, months:r.months||1, payMethod:(r.isDebt?'':pmKey(r.pay||s.payMethod)),
+            isDebt:!!r.isDebt, debtPaid:false, cancelled:false,
+            debtNote: r.isDebt ? '🔄 تجديد بالدين' : ''
           });
-          ce.totalRev += n2(r.price||s.price); ce.totalCost += (r.cost!=null?n2(r.cost):cost);
-          const day = rDate.slice(8,10); dailyRev[day] = (dailyRev[day]||0) + n2(r.price||s.price);
+          if(r.isDebt){ ce.totalCost += rc; }   // دين: لا إيراد حتى السداد (القيمة تُحصى عبر manualDebts)
+          else {
+            ce.totalRev += rp; ce.totalCost += rc;
+            const day = rDate.slice(8,10); dailyRev[day] = (dailyRev[day]||0) + rp;
+          }
         }
       });
 
@@ -6702,7 +6790,7 @@ async function exportMonthlyXLSX(ym, mName) {
       const cost = gCost(s);
       if(!s.cancelled && s.start && s.start.slice(0,7)===ym) {
         salesRows.push({'الزبون':c.name,'الخدمة':s.service,'النوع':s.isDebt?'دين':'جديد','الأشهر':s.months||1,
-          'السعر':n2(s.price),'التكلفة':cost,'الربح':n2(s.price)-cost,'طريقة الدفع':(PM[mof(s)]||{}).l||'','التاريخ':toDMY(s.start)});
+          'السعر':n2(s.price),'التكلفة':cost,'الربح':n2(s.price)-cost,'طريقة الدفع':pmLabel(s.payMethod),'التاريخ':toDMY(s.start)});
         if(!s.isDebt){ totalRev+=n2(s.price); totalCOGS+=cost; }
         if(s.isDebt&&!s.debtPaid){ totalDebt+=n2(s.debtAmount||s.price);
           debtRows.push({'الزبون':c.name,'الخدمة':s.service,'المبلغ':n2(s.debtAmount||s.price),'الحالة':'غير مسدد','التاريخ':toDMY(s.start)}); }
@@ -6710,9 +6798,11 @@ async function exportMonthlyXLSX(ym, mName) {
       if(!s.cancelled) (s.renewHistory||[]).forEach(r => {
         const rDate=(r.renewedAt||r.start||'').slice(0,10);
         if(rDate.slice(0,7)===ym){
-          salesRows.push({'الزبون':c.name,'الخدمة':s.service,'النوع':'تجديد','الأشهر':r.months||1,
-            'السعر':n2(r.price||s.price),'التكلفة':cost,'الربح':n2(r.price||s.price)-cost,'طريقة الدفع':(PM[mof(s)]||{}).l||'','التاريخ':toDMY(rDate)});
-          totalRev+=n2(r.price||s.price); totalCOGS+=cost;
+          const rp=n2(r.price||s.price), rc=(r.cost!=null&&r.cost!=='')?n2(r.cost):cost;
+          salesRows.push({'الزبون':c.name,'الخدمة':s.service,'النوع':r.isDebt?'تجديد (دين)':'تجديد','الأشهر':r.months||1,
+            'السعر':rp,'التكلفة':rc,'الربح':rp-rc,'طريقة الدفع':pmLabel(r.pay||s.payMethod),'التاريخ':toDMY(rDate)});
+          totalCOGS+=rc;
+          if(!r.isDebt) totalRev+=rp;   // الدين يُحصى عبر manualDebts (منع الازدواج)
         }
       });
     });
@@ -6787,7 +6877,7 @@ function openDebtM(did=null,preCid=null){
   } else {
     document.getElementById('mDebtT').textContent='💸 دين يدوي';
     ['dAmt','dSrv','dNote'].forEach(i=>{const el=document.getElementById(i);if(el)el.value='';});
-    setDV(document.getElementById('dDate'),new Date().toISOString().slice(0,10));
+    setDV(document.getElementById('dDate'),ymdNow());
     if(preCid)document.getElementById('dCust').value=preCid;
   }
   om('mDebt');
@@ -7095,7 +7185,7 @@ function exportDebts(){
   });
   const csv='\uFEFF'+out.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='debts_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='debts_'+ymdNow()+'.csv'; a.click();
   notify('📤 تم تصدير الديون');
 }
 window.exportDebts=exportDebts;
@@ -7232,7 +7322,7 @@ function delSv(i){showConfirm({icon:'🗑️',title:'حذف الخدمة',msg:'�
 // ══════════════════════════════════════════
 // BACKUP
 // ══════════════════════════════════════════
-async function expJSON(){if(!_AUTH_OK)return;const out=await _dbWithEncPwds();const b=new Blob([JSON.stringify(out,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='backup_'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(a.href);notify('⬇️ تم التصدير (كلمات السر مشفّرة)');}
+async function expJSON(){if(!_AUTH_OK)return;const out=await _dbWithEncPwds();const b=new Blob([JSON.stringify(out,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='backup_'+ymdNow()+'.json';a.click();URL.revokeObjectURL(a.href);notify('⬇️ تم التصدير (كلمات السر مشفّرة)');}
 function impJSON(e){
   const f=e.target.files[0];if(!f)return;
   const r=new FileReader();r.onload=async ev=>{
@@ -7272,7 +7362,7 @@ async function expXLSX(){
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(db.customers.map(c=>{const subs=(c.subscriptions||[]).filter(s=>!s.isCardGroup);return{'الاسم':c.name,'الهاتف':c.phone||'','نشط':subs.filter(s=>s.expiry&&du(s.expiry)>0).length,'منتهي':subs.filter(s=>s.expiry&&du(s.expiry)<=0).length,'الديون':custOwes(c)+' '+CUR};}) ),'الزبائن');
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(allDebtRows().map(r=>({'الزبون':r.name,'المبلغ':r.amt.toFixed(2)+' '+CUR,'الخدمة':r.srv,'الحالة':r.paid?'مسدد':'معلّق','ملاحظة':r.note}))),'الديون');
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(db.cards.map(c=>({'النوع':c.type,'الكود':c.code,'القيمة':c.value?'$'+c.value:'','الزبون':getCustN(c.customerId),'الحالة':c.status==='used'?'مُستخدم':'متوفر','التاريخ':toDMY(c.date||'')}))),'الكروت');
-  XLSX.writeFile(wb,'data_'+new Date().toISOString().slice(0,10)+'.xlsx');notify('📊 تم تصدير Excel');
+  XLSX.writeFile(wb,'data_'+ymdNow()+'.xlsx');notify('📊 تم تصدير Excel');
 }
 
 // ══════════════════════════════════════════
@@ -7494,7 +7584,7 @@ function openExpenseM(id=null){
     g('expAmt').value='';
     g('expCat').value='other';
     g('expRecur').value='once';
-    setDV(g('expDate'), new Date().toISOString().slice(0,10));
+    setDV(g('expDate'), ymdNow());
   }
   om('mExpense');
 }
@@ -7739,7 +7829,7 @@ function exportExpenses(){
     rows.push([e.desc, EXP_CATS[e.cat]||e.cat, e.recur==='monthly'?'شهري':e.recur==='yearly'?'سنوي':'مرة', n2(e.amount).toFixed(2), m.toFixed(2), e.date||'']); });
   const csv='\uFEFF'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='expenses_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='expenses_'+ymdNow()+'.csv'; a.click();
   notify('📤 تم تصدير المصاريف');
 }
 
@@ -8175,7 +8265,7 @@ function checkAndSendPushAlerts() {
     return {title:`📅 متابعة — ${a.cust.name}`, body:a.days<0?`متأخرة ${Math.abs(a.days)} يوم`:'مجدولة اليوم'};
   });
   if(!items.length) return;
-  const today = new Date().toISOString().slice(0,10);
+  const today = ymdNow();
   if((localStorage.getItem('_lastPushAlert')||'') === today) return; // مرة واحدة يومياً
   localStorage.setItem('_lastPushAlert', today);
   items.slice(0,4).forEach((x, i) => {
@@ -8616,7 +8706,7 @@ function toggleMySub(id) {
 function renewMySub(id){
   const s=(db.personalSubs||[]).find(x=>x.id===id); if(!s) return;
   const cyc=Math.max(1,parseInt(s.cycle)||1);
-  const base=s.nextDate||new Date().toISOString().slice(0,10);
+  const base=s.nextDate||ymdNow();
   const next=(typeof _addMonths==='function')?_addMonths(base,cyc):base;
   showConfirm({icon:'✅',title:'تجديد الاشتراك',msg:`سيُقدَّم تجديد <b>${esc(s.name)}</b> بمقدار <b>${cyc}</b> ${cyc===1?'شهر':'أشهر'}.<br><span style="font-size:.7rem;color:var(--mu)">${s.nextDate?'من '+toDMY(s.nextDate)+' ':''}إلى ${toDMY(next)}</span>`,okLabel:'تم التجديد',okClass:'bs',onOk:()=>{
     s.nextDate=next; s.active=true; s.updatedAt=new Date().toISOString();
@@ -8638,7 +8728,7 @@ function exportMySubs(){
   });
   const csv='\uFEFF'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='my_subscriptions_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='my_subscriptions_'+ymdNow()+'.csv'; a.click();
   notify('📤 تم تصدير اشتراكاتي');
 }
 window.exportMySubs=exportMySubs;
@@ -9130,7 +9220,7 @@ window.clearFollowUp=clearFollowUp;
 
 function snoozeTask(key){
   if(!db.settings.snoozed) db.settings.snoozed = {};
-  db.settings.snoozed[key] = new Date().toISOString().slice(0,10);
+  db.settings.snoozed[key] = ymdNow();
   save();
   _todayVer = -1;               // إجبار إعادة الرسم
   const tc=document.getElementById('today-content'); if(tc) tc.dataset.rendered='0';
@@ -9232,7 +9322,7 @@ function saveBulkCards() {
   const codes = (document.getElementById('bulkCodes').value||'').split('\n').map(l=>l.trim()).filter(Boolean);
   if(!type){ notify('⚠️ اختر نوع الكرت','wa'); return; }
   if(!codes.length){ notify('⚠️ أدخل أكواد الكروت','wa'); return; }
-  const today = new Date().toISOString().slice(0,10);
+  const today = ymdNow();
   let added = 0;
   codes.forEach(code=>{
     db.cards.push({id:uid(), type, code, value, status:'available', date:today, createdAt:new Date().toISOString()});
@@ -9680,7 +9770,7 @@ function exportStatementPDF(){
   const html=`<div style="font-family:'Segoe UI',Tahoma,sans-serif;direction:rtl;color:#222;background:#fff;padding:28px 30px;max-width:800px;margin:0 auto">
     <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #7c6aff;padding-bottom:14px;margin-bottom:18px">
       <div><div style="font-size:24px;font-weight:900;color:#7c6aff">Subsly</div><div style="font-size:13px;color:#666;margin-top:2px">كشف حساب مالي</div></div>
-      <div style="text-align:left"><div style="font-size:15px;font-weight:800">📅 ${mLabel}</div><div style="font-size:11px;color:#999;margin-top:3px;direction:ltr">${toDMY(new Date().toISOString().slice(0,10))}</div></div>
+      <div style="text-align:left"><div style="font-size:15px;font-weight:800">📅 ${mLabel}</div><div style="font-size:11px;color:#999;margin-top:3px;direction:ltr">${toDMY(ymdNow())}</div></div>
     </div>
     <div style="display:flex;gap:12px;margin-bottom:20px">
       <div style="flex:1;background:#eafaf3;border:1px solid #b6e8d4;border-radius:10px;padding:12px;text-align:center"><div style="font-size:11px;color:#666;margin-bottom:5px">إجمالي المدفوعات</div><div style="font-size:18px;font-weight:900;color:#0a9d6e;direction:ltr">${totalIn.toFixed(2)} ${CUR}</div></div>
@@ -9850,7 +9940,7 @@ function exportActivity(){
   log.forEach(a=>{ rows.push([new Date(a.t).toLocaleString('ar'), a.a||'', a.d||'']); });
   const csv='\uFEFF'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='activity_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='activity_'+ymdNow()+'.csv'; a.click();
   notify('📤 تم تصدير السجل');
 }
 window.exportActivity=exportActivity;
@@ -9859,21 +9949,20 @@ window.exportActivity=exportActivity;
 // BULK RENEW
 // ══════════════════════════════════════════
 function openBulkRenew(scopeIds) {
-  // Show modal with checkboxes for expiring subs (مع إمكانية حصرها بزبائن محدّدين)
   const scope = scopeIds && scopeIds.size ? scopeIds : null;
-  _bulkRenewScope = scope; // احفظ النطاق لإعادة الفلترة
+  _bulkRenewScope = scope;
   const win = (typeof _bulkRenewWin!=='undefined') ? _bulkRenewWin : 7;
   const expiring = [];
   db.customers.forEach(c=>{
     if(scope && !scope.has(c.id)) return;
     (c.subscriptions||[]).filter(s=>{
-      if(s.isCardGroup||!s.expiry) return false;
+      if(s.isCardGroup||s.cancelled||!s.expiry) return false;   // 🔒 استبعاد الملغاة
       const d=du(s.expiry);
       if(win==='all') return true;
-      if(win==='exp')  return d<0;          // المنتهية فقط
-      return d<=win;                         // ضمن النافذة (تشمل المنتهية)
+      if(win==='exp')  return d<0;
+      return d<=win;
     }).forEach(s=>{
-      expiring.push({cid:c.id,cname:c.name,sid:s.id,sname:s.service,expiry:s.expiry,days:du(s.expiry),months:s.months,price:s.price});
+      expiring.push({cid:c.id,cname:c.name,sid:s.id,sname:s.service,expiry:s.expiry,days:du(s.expiry),months:Math.min(RENEW_MAX_MONTHS,Math.max(1,Number(s.months)||1)),price:s.price,cost:gCost(s),pay:pmKey(s.payMethod)});
     });
   });
   let mo=document.getElementById('mBulkRenew');
@@ -9888,51 +9977,77 @@ function openBulkRenew(scopeIds) {
     ${[['exp','المنتهية'],[7,'≤7 أيام'],[30,'≤30 يوم'],['all','الكل']].map(([v,l])=>`<button class="utb${String(win)===String(v)?' us':''}" style="flex:1;font-size:.66rem;padding:.3rem .2rem" onclick="setBulkWin('${v}')">${l}</button>`).join('')}
   </div>`;
   if(!expiring.length){bl.innerHTML=winSel+'<div style="color:var(--mu);text-align:center;padding:1rem">لا توجد اشتراكات ضمن هذا النطاق</div>';om('mBulkRenew');return;}
-  // Select all by default
-  bl.innerHTML=winSel+`<div style="display:flex;gap:.4rem;margin-bottom:.5rem"><label style="font-size:.7rem;display:flex;align-items:center;gap:.3rem;cursor:pointer"><input type="checkbox" id="bulkAll" checked onchange="document.querySelectorAll('.bulk-chk').forEach(x=>x.checked=this.checked)"> تحديد الكل</label></div>`+
+  const hasExp = expiring.some(e=>e.days<0);
+  const baseSel = hasExp ? `<div style="background:rgba(108,92,231,.06);border:1px solid rgba(108,92,231,.22);border-radius:7px;padding:.5rem .6rem;margin-bottom:.5rem">
+    <div style="font-size:.66rem;font-weight:700;color:var(--mu);margin-bottom:.35rem">📅 أساس التجديد للمنتهية</div>
+    <div style="display:flex;gap:.35rem">
+      <button id="bb1" class="utb${_bulkBase==='exp'?' us':''}" style="flex:1;font-size:.66rem" onclick="setBulkBase('exp')">📆 من تاريخ الانتهاء</button>
+      <button id="bb2" class="utb${_bulkBase==='now'?' us':''}" style="flex:1;font-size:.66rem" onclick="setBulkBase('now')">📅 من اليوم</button>
+    </div></div>` : '';
+  bl.innerHTML=winSel+baseSel+`<div style="display:flex;gap:.4rem;margin-bottom:.5rem;align-items:center;flex-wrap:wrap">
+      <label style="font-size:.7rem;display:flex;align-items:center;gap:.3rem;cursor:pointer"><input type="checkbox" id="bulkAll" checked onchange="document.querySelectorAll('.bulk-chk').forEach(x=>x.checked=this.checked)"> تحديد الكل</label>
+      <span style="font-size:.6rem;color:var(--mu);margin-right:auto">✏️ السعر والمدة والدفع قابلة للتعديل لكل سطر</span>
+    </div>`+
     expiring.map(e=>{
       const cls=e.days<0?'var(--er)':e.days<=3?'var(--wa)':'var(--ok)';
       const lbl=e.days<0?'منتهي '+Math.abs(e.days)+'ي':'باقٍ '+e.days+'ي';
-      return`<label style="display:flex;align-items:center;gap:.5rem;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:.45rem .6rem;margin-bottom:.25rem;cursor:pointer">
-        <input type="checkbox" class="bulk-chk" checked data-cid="${e.cid}" data-sid="${e.sid}">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:.76rem;font-weight:700">${e.cname}</div>
-          <div style="font-size:.62rem;color:var(--mu)">${e.sname} • ${Number(e.months)||1}ش${e.price!=null&&e.price!==''?' • '+e.price+' '+CUR:''}</div>
+      const opt=k=>`<option value="${k}"${e.pay===k?' selected':''}>${k==='cash'?'💵 كاش':k==='transfer'?'🏦 حوالة':k==='balance'?'📲 رصيد':'💸 دين'}</option>`;
+      return`<div class="brow" data-cid="${e.cid}" data-sid="${e.sid}" style="background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:.45rem .6rem;margin-bottom:.3rem">
+        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+          <input type="checkbox" class="bulk-chk" checked style="width:16px;height:16px;accent-color:var(--ac);flex-shrink:0">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.76rem;font-weight:700">${e.cname}</div>
+            <div style="font-size:.62rem;color:var(--mu)">${e.sname} • <span dir="ltr">${toDMY(e.expiry)}</span></div>
+          </div>
+          <div style="font-size:.65rem;font-weight:700;color:${cls}">${lbl}</div>
         </div>
-        <div style="font-size:.65rem;font-weight:700;color:${cls}">${lbl}</div>
-      </label>`;
+        <div style="display:flex;gap:.3rem;flex-wrap:wrap;align-items:flex-end">
+          <div><label class="fl" style="font-size:.58rem">أشهر</label><input class="fi bmn" type="number" min="1" max="60" value="${e.months}" style="font-size:.68rem;padding:.2rem .35rem;width:52px"></div>
+          <div><label class="fl" style="font-size:.58rem">السعر</label><input class="fi bpr" type="number" min="0" step="0.01" value="${e.price!=null&&e.price!==''?e.price:''}" style="font-size:.68rem;padding:.2rem .35rem;width:68px"></div>
+          <div><label class="fl" style="font-size:.58rem">التكلفة</label><input class="fi bcst" type="number" min="0" step="0.01" value="${e.cost||''}" placeholder="0.00" style="font-size:.68rem;padding:.2rem .35rem;width:68px"></div>
+          <div><label class="fl" style="font-size:.58rem">الدفع</label><select class="fs bpay" style="font-size:.68rem;padding:.2rem .35rem">${opt('cash')}${opt('transfer')}${opt('balance')}${opt('debt')}</select></div>
+        </div>
+      </div>`;
     }).join('');
   om('mBulkRenew');
 }
-let _bulkRenewWin = 7, _bulkRenewScope = null;
+let _bulkRenewWin = 7, _bulkRenewScope = null, _bulkBase = 'now';
 function setBulkWin(v){ _bulkRenewWin = (v==='all'||v==='exp')?v:parseInt(v); openBulkRenew(_bulkRenewScope); }
-window.setBulkWin = setBulkWin;
+function setBulkBase(v){ _bulkBase = v; openBulkRenew(_bulkRenewScope); }
+window.setBulkWin = setBulkWin; window.setBulkBase = setBulkBase;
 
 function execBulkRenew() {
-  const selected=[...document.querySelectorAll('.bulk-chk:checked')];
-  if(!selected.length){notify('⚠️ اختر اشتراكاً واحداً على الأقل','wa');return;}
+  const rows=[...document.querySelectorAll('#bulkList .brow')].filter(r=>{const k=r.querySelector('.bulk-chk');return k&&k.checked;});
+  if(!rows.length){notify('⚠️ اختر اشتراكاً واحداً على الأقل','wa');return;}
+  const dbt = rows.filter(r=>r.querySelector('.bpay').value==='debt').length;
   showConfirm({icon:'🔄',title:'تأكيد التجديد الدفعي',
-    msg:`سيتم تجديد ${selected.length} اشتراك دفعةً واحدة. يمكنك التراجع بعدها مباشرةً.`,
-    okLabel:`✅ تجديد ${selected.length}`, okClass:'bp',
+    msg:`سيتم تجديد ${rows.length} اشتراك دفعةً واحدة.${dbt?`<br><b style="color:var(--er)">${dbt} منها ستُسجَّل ديناً (لا إيراد حتى السداد)</b>`:''}<br><span style="font-size:.68rem;color:var(--mu)">يمكنك التراجع بعدها مباشرةً.</span>`,
+    okLabel:`✅ تجديد ${rows.length}`, okClass:'bp',
     onOk:()=>{
-      // لقطة للتراجع
-      const snap = JSON.parse(JSON.stringify(db.customers));
-      let count=0;
-      selected.forEach(el=>{
+      const snapC = JSON.parse(JSON.stringify(db.customers));
+      const snapD = JSON.parse(JSON.stringify(db.manualDebts||[]));
+      let count=0, dcount=0; _renewWarn=[];
+      rows.forEach(el=>{
         const cid=el.dataset.cid,sid=el.dataset.sid;
         const cust=db.customers.find(x=>x.id===cid);if(!cust)return;
         const s=(cust.subscriptions||[]).find(x=>x.id===sid);if(!s||!s.expiry)return;
-        // للمنتهية في الدفعي: من اليوم (سلوك سابق)
-        if(_renewSub(cust, s, {base: du(s.expiry)<0?'now':'exp'})){ cust.updatedAt=new Date().toISOString(); count++; }
+        const months=Math.min(RENEW_MAX_MONTHS,Math.max(1,parseInt(el.querySelector('.bmn').value)||1));
+        const price=el.querySelector('.bpr').value;
+        const cost=el.querySelector('.bcst').value;
+        const pay=el.querySelector('.bpay').value;
+        if(_renewSub(cust, s, {months, price, cost, pay, base: du(s.expiry)<0?_bulkBase:'exp'})){
+          cust.updatedAt=new Date().toISOString(); count++; if(pay==='debt') dcount++;
+        }
       });
-      _log('bulk_renew','تجديد دفعي '+count+' اشتراك');
+      _log('bulk_renew','تجديد دفعي '+count+' اشتراك'+(dcount?' ('+dcount+' بالدين)':''));
       cm('mBulkRenew');
       deleteWithUndo({
-        label:`تم تجديد ${count} اشتراك`,
+        label:`تم تجديد ${count} اشتراك`+(dcount?` · ${dcount} ديناً`:''),
         doDelete:()=>{ save(); },
-        restore:()=>{ db.customers = snap; },
-        after:()=>{ rC(); rUBan(); }
+        restore:()=>{ db.customers = snapC; db.manualDebts = snapD; },
+        after:()=>{ rC(); rUBan(); if(typeof rDebts==='function') rDebts(); }
       });
+      _flushRenewWarn();
     }
   });
 }
